@@ -1,0 +1,4 @@
+zmx runs terminal processes in persistent sessions. Users can detach and
+reattach without stopping those processes. When a user reattaches, zmx
+restores terminal state and output. Multiple clients can connect to the
+same session.

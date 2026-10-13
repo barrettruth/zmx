@@ -607,6 +607,48 @@ pub fn isUserInput(payload: []const u8) bool {
     return false;
 }
 
+/// The VT formatter skips rows that hold no text, so a row that only has
+/// background-colored blank cells loses its background. Repaint those cells.
+fn writeStyledBlankRows(writer: *std.Io.Writer, term: *ghostty_vt.Terminal) !void {
+    const pages = &term.screens.active.pages;
+    var saved = false;
+    var y: usize = 0;
+    while (y < pages.rows) : (y += 1) {
+        var has_text = false;
+        var x: usize = 0;
+        while (x < pages.cols) : (x += 1) {
+            const pin = pages.pin(.{ .active = .{ .x = @intCast(x), .y = @intCast(y) } }) orelse continue;
+            if (pin.rowAndCell().cell.hasText()) {
+                has_text = true;
+                break;
+            }
+        }
+        if (has_text) continue;
+        x = 0;
+        while (x < pages.cols) : (x += 1) {
+            const pin = pages.pin(.{ .active = .{ .x = @intCast(x), .y = @intCast(y) } }) orelse continue;
+            const cell = pin.rowAndCell().cell;
+            switch (cell.content_tag) {
+                .bg_color_rgb, .bg_color_palette => {},
+                else => continue,
+            }
+            if (!saved) {
+                try writer.writeAll("\x1b7");
+                saved = true;
+            }
+            try writer.print("\x1b[{d};{d}H", .{ y + 1, x + 1 });
+            switch (cell.content_tag) {
+                .bg_color_rgb => {
+                    const rgb = cell.content.color_rgb;
+                    try writer.print("\x1b[48;2;{d};{d};{d}m ", .{ rgb.r, rgb.g, rgb.b });
+                },
+                else => try writer.print("\x1b[48;5;{d}m ", .{cell.content.color_palette}),
+            }
+        }
+    }
+    if (saved) try writer.writeAll("\x1b[0m\x1b8");
+}
+
 pub fn serializeTerminalState(alloc: std.mem.Allocator, term: *ghostty_vt.Terminal) ?[]const u8 {
     var builder: std.Io.Writer.Allocating = .init(alloc);
     defer builder.deinit();
@@ -700,6 +742,10 @@ pub fn serializeTerminalState(alloc: std.mem.Allocator, term: *ghostty_vt.Termin
     vis_fmt.format(&builder.writer) catch |err| {
         std.log.warn("failed to format terminal state err={s}", .{@errorName(err)});
         return null;
+    };
+
+    writeStyledBlankRows(&builder.writer, term) catch |err| {
+        std.log.warn("failed to restore blank row backgrounds err={s}", .{@errorName(err)});
     };
 
     const output = builder.writer.buffered();

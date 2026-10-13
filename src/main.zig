@@ -2354,7 +2354,7 @@ fn attach(daemon: *Daemon) !void {
 
     // Clear screen before attaching. This provides a clean slate before
     // the session restore.
-    const clear_seq = "\x1b[2J\x1b[H";
+    const clear_seq = "\x1b[0m\x1b[2J\x1b[H";
     _ = try posix.write(posix.STDOUT_FILENO, clear_seq);
 
     const looper = try clientLoop(client_sock);

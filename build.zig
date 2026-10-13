@@ -55,6 +55,7 @@ pub fn build(b: *std.Build) void {
             .root_module = exe_mod,
         });
         exe.linkLibC();
+        if (target.result.os.tag == .openbsd) exe.linkSystemLibrary("util");
         b.installArtifact(exe);
         const run_cmd = b.addRunArtifact(exe);
         run_cmd.step.dependOn(b.getInstallStep());
@@ -87,6 +88,7 @@ pub fn build(b: *std.Build) void {
             .use_lld = !is_macos,
         });
         exe_unit_tests.linkLibC();
+        if (target.result.os.tag == .openbsd) exe_unit_tests.linkSystemLibrary("util");
         const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
         test_step.dependOn(&run_exe_unit_tests.step);
     }

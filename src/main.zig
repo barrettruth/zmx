@@ -2317,7 +2317,7 @@ fn attach(daemon: *Daemon) !void {
     const result = try daemon.ensureSession();
     if (result.is_daemon) return;
 
-    const client_sock = try socket.sessionConnect(daemon.socket_path);
+    var client_sock = try socket.sessionConnect(daemon.socket_path);
     std.log.info("attached session={s}", .{daemon.session_name});
     //  This is typically used with tcsetattr() to modify terminal settings.
     //      - you first get the current settings with tcgetattr()
@@ -2360,46 +2360,44 @@ fn attach(daemon: *Daemon) !void {
         _ = cross.c.tcsetattr(posix.STDIN_FILENO, cross.c.TCSANOW, &raw_termios);
     }
 
-    // Clear screen before attaching. This provides a clean slate before
-    // the session restore.
-    const clear_seq = "\x1b[0m\x1b[2J\x1b[H";
-    _ = try posix.write(posix.STDOUT_FILENO, clear_seq);
+    while (true) {
+        const clear_seq = "\x1b[0m\x1b[2J\x1b[H";
+        _ = posix.write(posix.STDOUT_FILENO, clear_seq) catch |err| {
+            posix.close(client_sock);
+            return err;
+        };
 
-    const looper = try clientLoop(client_sock);
-    switch (looper.kind) {
-        .detach => return,
-        .switch_session => {
-            if (looper.session_name) |session_name| {
-                var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
-                const cwd = std.posix.getcwd(&cwd_buf) catch "";
-                const target_path = socket.getSocketPath(
-                    daemon.alloc,
-                    daemon.cfg.socket_dir,
-                    session_name,
-                ) catch |err| switch (err) {
-                    error.NameTooLong => return socket.printSessionNameTooLong(
-                        session_name,
-                        daemon.cfg.socket_dir,
-                    ),
-                    error.OutOfMemory => return err,
-                };
-
-                const clients = try std.ArrayList(*Client).initCapacity(daemon.alloc, 10);
-                var target_daemon = Daemon{
-                    .running = true,
-                    .cfg = daemon.cfg,
-                    .alloc = daemon.alloc,
-                    .clients = clients,
-                    .session_name = session_name,
-                    .socket_path = target_path,
-                    .pid = undefined,
-                    .cwd = cwd,
-                    .created_at = @intCast(std.time.timestamp()),
-                    .leader_client_fd = null,
-                };
-                return attach(&target_daemon);
-            }
-        },
+        const looper = try clientLoop(client_sock);
+        if (looper.kind == .detach) return;
+        const session_name = looper.session_name orelse return;
+        defer daemon.alloc.free(session_name);
+        var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const target_path = socket.getSocketPath(
+            daemon.alloc,
+            daemon.cfg.socket_dir,
+            session_name,
+        ) catch |err| switch (err) {
+            error.NameTooLong => return socket.printSessionNameTooLong(session_name, daemon.cfg.socket_dir),
+            error.OutOfMemory => return err,
+        };
+        defer daemon.alloc.free(target_path);
+        var target = Daemon{
+            .running = true,
+            .cfg = daemon.cfg,
+            .alloc = daemon.alloc,
+            .clients = try std.ArrayList(*Client).initCapacity(daemon.alloc, 10),
+            .session_name = session_name,
+            .socket_path = target_path,
+            .pid = undefined,
+            .cwd = std.posix.getcwd(&cwd_buf) catch "",
+            .created_at = @intCast(std.time.timestamp()),
+            .leader_client_fd = null,
+        };
+        const target_result = try target.ensureSession();
+        // The daemon already released its allocations in ensureSession.
+        if (target_result.is_daemon) posix.exit(0);
+        target.clients.deinit(daemon.alloc);
+        client_sock = try socket.sessionConnect(target_path);
     }
 }
 

@@ -1186,6 +1186,7 @@ const Daemon = struct {
 
     pub fn handleDetachAll(self: *Daemon) void {
         std.log.info("detach all clients={d}", .{self.clients.items.len});
+        self.leader_client_fd = null;
         for (self.clients.items) |client_to_close| {
             client_to_close.deinit();
             self.alloc.destroy(client_to_close);

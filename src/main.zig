@@ -86,11 +86,15 @@ fn closeSignalPipe() void {
     posix.close(fds[1]);
 }
 
-fn drainSignalPipe() void {
+fn drainSignalPipe() bool {
+    var terminate = false;
     var b: [16]u8 = undefined;
     while (true) {
-        const n = posix.read(sig_pipe[0], &b) catch return;
-        if (n == 0) return;
+        const n = posix.read(sig_pipe[0], &b) catch return terminate;
+        if (n == 0) return terminate;
+        for (b[0..n]) |sig| {
+            if (sig != posix.SIG.WINCH) terminate = true;
+        }
     }
 }
 
@@ -917,6 +921,7 @@ const Daemon = struct {
             if (pid == 0) { // child (daemon)
                 // becomes the session leader and detaches process from its controlling terminal
                 _ = try posix.setsid();
+                resetWakeHandlers();
 
                 log_system.deinit();
 
@@ -2317,6 +2322,13 @@ fn attach(daemon: *Daemon) !void {
     const result = try daemon.ensureSession();
     if (result.is_daemon) return;
 
+    try openSignalPipe();
+    defer closeSignalPipe();
+    installWakeHandler(posix.SIG.WINCH);
+    installWakeHandler(posix.SIG.TERM);
+    installWakeHandler(posix.SIG.HUP);
+    installWakeHandler(posix.SIG.INT);
+
     var client_sock = try socket.sessionConnect(daemon.socket_path);
     std.log.info("attached session={s}", .{daemon.session_name});
     //  This is typically used with tcsetattr() to modify terminal settings.
@@ -2662,10 +2674,6 @@ fn clientLoop(client_sock_fd: i32) !ClientResult {
     const alloc = std.heap.c_allocator;
     defer posix.close(client_sock_fd);
 
-    try openSignalPipe();
-    defer closeSignalPipe();
-    installWakeHandler(posix.SIG.WINCH);
-
     // Make socket non-blocking to avoid blocking on writes
     var sock_flags = try posix.fcntl(client_sock_fd, posix.F.GETFL, 0);
     sock_flags |= O_NONBLOCK;
@@ -2730,7 +2738,7 @@ fn clientLoop(client_sock_fd: i32) !ClientResult {
         _ = try posix.poll(poll_fds.items, -1);
 
         if (poll_fds.items[2].revents & posix.POLL.IN != 0) {
-            drainSignalPipe();
+            if (drainSignalPipe()) return .{ .kind = .detach, .session_name = null };
             const next_size = ipc.getTerminalSize(posix.STDOUT_FILENO);
             try ipc.appendSizeMessage(alloc, &sock_write_buf, .Resize, next_size);
         }
@@ -2896,7 +2904,7 @@ fn daemonLoop(daemon: *Daemon, server_sock_fd: i32, pty_fd: i32) !void {
         _ = try posix.poll(poll_fds.items, -1);
 
         if (poll_fds.items[2].revents & posix.POLL.IN != 0) {
-            drainSignalPipe();
+            if (!drainSignalPipe()) continue;
             std.log.info(
                 "SIGTERM received, shutting down gracefully session={s}",
                 .{daemon.session_name},
@@ -3130,9 +3138,10 @@ fn daemonLoop(daemon: *Daemon, server_sock_fd: i32, pty_fd: i32) !void {
     }
 }
 
-fn wakeSignalPipe(_: i32, _: *const posix.siginfo_t, _: ?*anyopaque) callconv(.c) void {
+fn wakeSignalPipe(sig: i32, _: *const posix.siginfo_t, _: ?*anyopaque) callconv(.c) void {
     const saved = std.c._errno().*;
-    _ = std.c.write(sig_pipe[1], "x", 1);
+    const byte = [_]u8{@intCast(sig)};
+    _ = std.c.write(sig_pipe[1], &byte, 1);
     std.c._errno().* = saved;
 }
 
@@ -3146,6 +3155,20 @@ fn installWakeHandler(sig: u6) void {
         .flags = posix.SA.SIGINFO,
     };
     posix.sigaction(sig, &act, null);
+}
+
+// A daemon created during a session switch must not use the client's handlers.
+fn resetWakeHandlers() void {
+    const dfl: posix.Sigaction = .{
+        .handler = .{ .handler = posix.SIG.DFL },
+        .mask = posix.sigemptyset(),
+        .flags = 0,
+    };
+    inline for (.{ posix.SIG.WINCH, posix.SIG.TERM, posix.SIG.HUP, posix.SIG.INT }) |sig| {
+        var current: posix.Sigaction = undefined;
+        posix.sigaction(sig, null, &current);
+        if (current.handler.sigaction == wakeSignalPipe) posix.sigaction(sig, &dfl, null);
+    }
 }
 
 fn ignoreSigpipe() void {

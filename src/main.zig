@@ -79,6 +79,13 @@ fn openSignalPipe() !void {
     sig_pipe = try posix.pipe2(.{ .CLOEXEC = true, .NONBLOCK = true });
 }
 
+fn closeSignalPipe() void {
+    const fds = sig_pipe;
+    sig_pipe = .{ -1, -1 };
+    posix.close(fds[0]);
+    posix.close(fds[1]);
+}
+
 fn drainSignalPipe() void {
     var b: [16]u8 = undefined;
     while (true) {
@@ -2658,6 +2665,7 @@ fn clientLoop(client_sock_fd: i32) !ClientResult {
     defer posix.close(client_sock_fd);
 
     try openSignalPipe();
+    defer closeSignalPipe();
     installWakeHandler(posix.SIG.WINCH);
 
     // Make socket non-blocking to avoid blocking on writes
@@ -2833,6 +2841,7 @@ fn daemonLoop(daemon: *Daemon, server_sock_fd: i32, pty_fd: i32) !void {
     std.log.info("daemon started session={s} pty_fd={d}", .{ daemon.session_name, pty_fd });
     daemon.pty_fd = pty_fd;
     try openSignalPipe();
+    defer closeSignalPipe();
     installWakeHandler(posix.SIG.TERM);
     var poll_fds = try std.ArrayList(posix.pollfd).initCapacity(daemon.alloc, 8);
     defer poll_fds.deinit(daemon.alloc);

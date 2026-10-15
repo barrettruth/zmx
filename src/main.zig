@@ -2405,7 +2405,15 @@ fn attach(daemon: *Daemon) !void {
             .created_at = @intCast(std.time.timestamp()),
             .leader_client_fd = null,
         };
-        const target_result = try target.ensureSession();
+        const client_pid = std.c.getpid();
+        const target_result = target.ensureSession() catch |err| {
+            if (std.c.getpid() != client_pid) {
+                std.log.err("daemon failed: {s}", .{@errorName(err)});
+                posix.exit(1);
+            }
+            target.clients.deinit(daemon.alloc);
+            return err;
+        };
         // The daemon already released its allocations in ensureSession.
         if (target_result.is_daemon) posix.exit(0);
         target.clients.deinit(daemon.alloc);

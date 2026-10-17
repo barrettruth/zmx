@@ -38,6 +38,13 @@ pub fn openSignalPipe() !void {
     sig_pipe = try lib_posix.pipe2(.{ .CLOEXEC = true, .NONBLOCK = true });
 }
 
+pub fn closeSignalPipe() void {
+    const fds = sig_pipe;
+    sig_pipe = .{ -1, -1 };
+    lib_posix.close(fds[0]);
+    lib_posix.close(fds[1]);
+}
+
 /// Returns true if any signal other than SIGWINCH was received.
 pub fn drainSignalPipe() bool {
     var terminate = false;

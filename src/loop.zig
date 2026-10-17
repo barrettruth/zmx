@@ -30,6 +30,7 @@ pub fn clientLoop(client_sock_fd: i32, env_str: []const u8) !ClientResult {
     defer lib_posix.close(client_sock_fd);
 
     try signal.openSignalPipe();
+    defer signal.closeSignalPipe();
     signal.installWakeHandler(@intFromEnum(lib_posix.SIG.WINCH));
     signal.installWakeHandler(@intFromEnum(lib_posix.SIG.TERM));
     signal.installWakeHandler(@intFromEnum(lib_posix.SIG.HUP));
